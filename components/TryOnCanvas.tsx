@@ -46,6 +46,10 @@ interface TryOnCanvasProps {
   enableOcclusion?: boolean;
   /** Whether to show debug wireframes for occlusion geometry. */
   debugOcclusion?: boolean;
+  /** Whether real-time cloth simulation (hem drape & sway) is enabled. */
+  enableClothSim?: boolean;
+  /** Wind / breeze strength for interactive hem flutter. */
+  windStrength?: number;
   /** Garment visual and sizing configuration. */
   garmentConfig?: GarmentConfig;
   /** Callback to report current FPS to parent. */
@@ -89,6 +93,8 @@ export default function TryOnCanvas({
   showSkeleton = true,
   enableOcclusion = true,
   debugOcclusion = false,
+  enableClothSim = true,
+  windStrength = 0.0,
   garmentConfig,
   onFpsUpdate,
   onError,
@@ -108,6 +114,8 @@ export default function TryOnCanvas({
   const showSkeletonRef = useRef(showSkeleton);
   const enableOcclusionRef = useRef(enableOcclusion);
   const debugOcclusionRef = useRef(debugOcclusion);
+  const enableClothSimRef = useRef(enableClothSim);
+  const windStrengthRef = useRef(windStrength);
   const garmentConfigRef = useRef(garmentConfig);
 
   // Track the last result timestamp we reported stats for (avoid spamming)
@@ -128,6 +136,15 @@ export default function TryOnCanvas({
       });
     }
   }, [enableOcclusion, debugOcclusion]);
+
+  useEffect(() => {
+    enableClothSimRef.current = enableClothSim;
+    windStrengthRef.current = windStrength;
+    if (sceneManagerRef.current) {
+      sceneManagerRef.current.setClothSimEnabled(enableClothSim);
+      sceneManagerRef.current.setWindStrength(windStrength);
+    }
+  }, [enableClothSim, windStrength]);
 
   useEffect(() => {
     garmentConfigRef.current = garmentConfig;
@@ -379,6 +396,8 @@ export default function TryOnCanvas({
               enabled: enableOcclusionRef.current,
               debugWireframe: debugOcclusionRef.current,
             });
+            sm.setClothSimEnabled(enableClothSimRef.current);
+            sm.setWindStrength(windStrengthRef.current);
             if (garmentConfigRef.current) {
               applyGarmentConfig(sm, garmentConfigRef.current);
             }

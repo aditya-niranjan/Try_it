@@ -34,6 +34,8 @@ export default function TryOnPage() {
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [enableOcclusion, setEnableOcclusion] = useState(true);
   const [debugOcclusion, setDebugOcclusion] = useState(false);
+  const [enableClothSim, setEnableClothSim] = useState(true);
+  const [isBreezeActive, setIsBreezeActive] = useState(false);
   const [inferenceStats, setInferenceStats] = useState<{ ms: number; delegate: 'GPU' | 'CPU' } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -188,6 +190,35 @@ export default function TryOnPage() {
             </button>
           )}
 
+          {/* Cloth Simulation toggle (Gate S6) */}
+          {isCameraActive && (
+            <button
+              onClick={() => setEnableClothSim((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                enableClothSim
+                  ? 'bg-fuchsia-500/15 border-fuchsia-500/30 text-fuchsia-300 hover:bg-fuchsia-500/25'
+                  : 'bg-white/[0.04] border-white/[0.08] text-white/40 hover:text-white/70'
+              }`}
+              title="Toggle dynamic cloth simulation (hem drape and sway)"
+              id="btn-toggle-cloth"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M2 12c2-2 4-2 6 0s4 2 6 0 4-2 6 0" />
+                <path d="M2 17c2-2 4-2 6 0s4 2 6 0 4-2 6 0" />
+              </svg>
+              <span>{enableClothSim ? 'Cloth Sim ON' : 'Cloth Sim OFF'}</span>
+            </button>
+          )}
+
           {/* Tracking status badge */}
           {isCameraActive && trackingStatus !== 'idle' && (
             <div
@@ -298,6 +329,8 @@ export default function TryOnPage() {
             showSkeleton={showSkeleton}
             enableOcclusion={enableOcclusion}
             debugOcclusion={debugOcclusion}
+            enableClothSim={enableClothSim}
+            windStrength={isBreezeActive ? 1.0 : 0.0}
             garmentConfig={garmentConfig}
             onFpsUpdate={handleFpsUpdate}
             onError={handleError}
@@ -438,6 +471,51 @@ export default function TryOnPage() {
               >
                 <span>Rig Wireframe</span>
                 <span className="text-[10px] font-mono">{debugOcclusion ? 'SHOWN' : 'HIDDEN'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Cloth Simulation Controls (Gate S6) */}
+          <div className="space-y-2.5">
+            <div className="flex justify-between items-center">
+              <label className="text-xs font-medium text-white/70">Cloth Physics</label>
+              <span className="text-[10px] font-mono text-fuchsia-400">Gate S6</span>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => setEnableClothSim((prev) => !prev)}
+                className={`w-full py-2 px-3 rounded-xl border text-xs font-medium flex items-center justify-between transition-all cursor-pointer ${
+                  enableClothSim
+                    ? 'bg-fuchsia-500/15 border-fuchsia-500/30 text-fuchsia-300'
+                    : 'bg-white/[0.04] border-white/[0.08] text-white/40 hover:text-white/70'
+                }`}
+                title="Toggle Position-Based Dynamics cloth simulation"
+              >
+                <span className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${enableClothSim ? 'bg-fuchsia-400 animate-pulse' : 'bg-white/20'}`} />
+                  Hem Drape & Sway
+                </span>
+                <span className="text-[10px] font-mono">{enableClothSim ? 'ACTIVE' : 'STATIC'}</span>
+              </button>
+
+              <button
+                onClick={() => setIsBreezeActive((prev) => !prev)}
+                className={`w-full py-1.5 px-3 rounded-lg border text-[11px] font-medium flex items-center justify-between transition-all cursor-pointer ${
+                  isBreezeActive
+                    ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300'
+                    : 'bg-white/[0.02] border-white/[0.06] text-white/30 hover:text-white/60'
+                }`}
+                title="Toggle wind / fan breeze effect on hem"
+              >
+                <span className="flex items-center gap-1.5">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2" />
+                    <path d="M9.6 4.6A2 2 0 1 1 11 8H2" />
+                    <path d="M12.6 19.4A2 2 0 1 0 14 16H2" />
+                  </svg>
+                  Wind Breeze Effect
+                </span>
+                <span className="text-[10px] font-mono">{isBreezeActive ? 'BLOWING' : 'OFF'}</span>
               </button>
             </div>
           </div>

@@ -34,6 +34,7 @@ import {
 } from '../garment/GarmentMaterial';
 import type { NormalizedLandmark } from '../tracking/OneEuroFilter';
 import { OcclusionPass, type OcclusionConfig } from './OcclusionPass';
+import { ClothSolver } from '../simulation/ClothSolver';
 
 export interface TorsoDrawInfo {
   width: number;
@@ -60,6 +61,10 @@ export class SceneManager {
 
   private tshirtGenerator: TShirtGenerator = new TShirtGenerator();
   private occlusionPass: OcclusionPass | null = null;
+  private clothSolver: ClothSolver | null = null;
+  private enableClothSim = true;
+  private windStrength = 0.0;
+  private lastSimTime = 0;
 
   private currentGarmentParams: TShirtParams = {
     chestWidth: 1.0,
@@ -199,6 +204,14 @@ export class SceneManager {
     this.rightSleeveMesh = new Mesh(rightSleeve, material);
     this.rightShoulderPivot.add(this.rightSleeveMesh);
     this.garmentGroup.add(this.rightShoulderPivot);
+
+    // 4. Initialize Real-Time Cloth Simulation (Gate S6)
+    this.clothSolver = new ClothSolver({ windStrength: this.windStrength });
+    this.clothSolver.initFromGeometry(torso, {
+      chestWidth: this.currentGarmentParams.chestWidth ?? 1.0,
+      length: this.currentGarmentParams.length ?? 1.25,
+      torsoDepth: this.currentGarmentParams.torsoDepth ?? 0.28,
+    });
   }
 
   /**
@@ -252,6 +265,30 @@ export class SceneManager {
 
   get isOcclusionEnabled(): boolean {
     return this.occlusionPass?.enabled ?? false;
+  }
+
+  /**
+   * Configure dynamic cloth simulation (Gate S6).
+   */
+  setClothSimEnabled(enabled: boolean): void {
+    this.enableClothSim = enabled;
+    if (!enabled && this.clothSolver && this.torsoMesh) {
+      this.clothSolver.reset(this.torsoMesh.geometry);
+    }
+  }
+
+  get isClothSimActive(): boolean {
+    return this.enableClothSim;
+  }
+
+  /**
+   * Set wind / breeze strength for interactive hem flutter.
+   */
+  setWindStrength(strength: number): void {
+    this.windStrength = strength;
+    if (this.clothSolver) {
+      this.clothSolver.setConfig({ windStrength: strength });
+    }
   }
 
   /**
@@ -408,6 +445,19 @@ export class SceneManager {
         shoulderSpan
       );
     }
+
+    // ------------------------------------------------------------------
+    // 7. Dynamic Cloth Simulation Step (Gate S6)
+    // ------------------------------------------------------------------
+    const now = performance.now();
+    const dt = this.lastSimTime > 0 ? Math.min((now - this.lastSimTime) / 1000, 0.033) : 0.016;
+    this.lastSimTime = now;
+
+    if (this.clothSolver && this.torsoMesh && this.enableClothSim) {
+      this.clothSolver.updateTorsoMotion(this.smoothedPosition, this.smoothedQuaternion, dt);
+      this.clothSolver.step(dt, this.smoothedQuaternion);
+      this.clothSolver.applyToGeometry(this.torsoMesh.geometry);
+    }
   }
 
   /**
@@ -479,6 +529,10 @@ export class SceneManager {
     if (this.occlusionPass) {
       this.occlusionPass.dispose();
       this.occlusionPass = null;
+    }
+
+    if (this.clothSolver) {
+      this.clothSolver = null;
     }
 
     if (this.renderer) {
