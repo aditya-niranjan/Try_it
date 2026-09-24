@@ -32,6 +32,8 @@ export default function TryOnPage() {
   const [fps, setFps] = useState(0);
   const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>('idle');
   const [showSkeleton, setShowSkeleton] = useState(true);
+  const [enableOcclusion, setEnableOcclusion] = useState(true);
+  const [debugOcclusion, setDebugOcclusion] = useState(false);
   const [inferenceStats, setInferenceStats] = useState<{ ms: number; delegate: 'GPU' | 'CPU' } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -156,6 +158,36 @@ export default function TryOnPage() {
             </button>
           )}
 
+          {/* Depth Occlusion toggle (Gate S5) */}
+          {isCameraActive && (
+            <button
+              onClick={() => setEnableOcclusion((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                enableOcclusion
+                  ? 'bg-blue-500/15 border-blue-500/30 text-blue-300 hover:bg-blue-500/25'
+                  : 'bg-white/[0.04] border-white/[0.08] text-white/40 hover:text-white/70'
+              }`}
+              title="Toggle depth occlusion (hands/arms in front of torso occlude garment)"
+              id="btn-toggle-occlusion"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                <polyline points="2 17 12 22 22 17" />
+                <polyline points="2 12 12 17 22 12" />
+              </svg>
+              <span>{enableOcclusion ? 'Occlusion ON' : 'Occlusion OFF'}</span>
+            </button>
+          )}
+
           {/* Tracking status badge */}
           {isCameraActive && trackingStatus !== 'idle' && (
             <div
@@ -264,6 +296,8 @@ export default function TryOnPage() {
           <TryOnCanvas
             isCameraActive={isCameraActive}
             showSkeleton={showSkeleton}
+            enableOcclusion={enableOcclusion}
+            debugOcclusion={debugOcclusion}
             garmentConfig={garmentConfig}
             onFpsUpdate={handleFpsUpdate}
             onError={handleError}
@@ -367,6 +401,44 @@ export default function TryOnPage() {
                   {sleeve}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* Depth Occlusion Controls (Gate S5) */}
+          <div className="space-y-2.5">
+            <div className="flex justify-between items-center">
+              <label className="text-xs font-medium text-white/70">Depth Occlusion</label>
+              <span className="text-[10px] font-mono text-emerald-400">Gate S5</span>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => setEnableOcclusion((prev) => !prev)}
+                className={`w-full py-2 px-3 rounded-xl border text-xs font-medium flex items-center justify-between transition-all cursor-pointer ${
+                  enableOcclusion
+                    ? 'bg-blue-500/15 border-blue-500/30 text-blue-300'
+                    : 'bg-white/[0.04] border-white/[0.08] text-white/40 hover:text-white/70'
+                }`}
+                title="Toggle body depth occlusion"
+              >
+                <span className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${enableOcclusion ? 'bg-blue-400' : 'bg-white/20'}`} />
+                  Hands/Forearms in Front
+                </span>
+                <span className="text-[10px] font-mono">{enableOcclusion ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <button
+                onClick={() => setDebugOcclusion((prev) => !prev)}
+                className={`w-full py-1.5 px-3 rounded-lg border text-[11px] font-medium flex items-center justify-between transition-all cursor-pointer ${
+                  debugOcclusion
+                    ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                    : 'bg-white/[0.02] border-white/[0.06] text-white/30 hover:text-white/60'
+                }`}
+                title="Show 3D occlusion rig wireframe"
+              >
+                <span>Rig Wireframe</span>
+                <span className="text-[10px] font-mono">{debugOcclusion ? 'SHOWN' : 'HIDDEN'}</span>
+              </button>
             </div>
           </div>
 

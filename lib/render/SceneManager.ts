@@ -33,6 +33,7 @@ import {
   type GarmentMaterialParams,
 } from '../garment/GarmentMaterial';
 import type { NormalizedLandmark } from '../tracking/OneEuroFilter';
+import { OcclusionPass, type OcclusionConfig } from './OcclusionPass';
 
 export interface TorsoDrawInfo {
   width: number;
@@ -58,6 +59,7 @@ export class SceneManager {
   private rightSleeveMesh: Mesh | null = null;
 
   private tshirtGenerator: TShirtGenerator = new TShirtGenerator();
+  private occlusionPass: OcclusionPass | null = null;
 
   private currentGarmentParams: TShirtParams = {
     chestWidth: 1.0,
@@ -138,7 +140,12 @@ export class SceneManager {
     // 5. Root Garment Group
     this.garmentGroup = new Group();
     this.garmentGroup.visible = false;
+    this.garmentGroup.renderOrder = 1;
     this.scene.add(this.garmentGroup);
+
+    // 6. 3D Anatomical Depth Occlusion Pass (Gate S5)
+    this.occlusionPass = new OcclusionPass();
+    this.occlusionPass.attachToScene(this.scene);
 
     this.rebuildGarmentMesh();
   }
@@ -232,6 +239,19 @@ export class SceneManager {
     if (needsGeometryRebuild) {
       this.rebuildGarmentMesh();
     }
+  }
+
+  /**
+   * Configure depth occlusion and debug visualization.
+   */
+  setOcclusionConfig(config: OcclusionConfig): void {
+    if (this.occlusionPass) {
+      this.occlusionPass.setConfig(config);
+    }
+  }
+
+  get isOcclusionEnabled(): boolean {
+    return this.occlusionPass?.enabled ?? false;
   }
 
   /**
@@ -375,6 +395,19 @@ export class SceneManager {
       this.smoothedRightArmQuat.slerp(identityQuat, 0.15);
       this.rightShoulderPivot.quaternion.copy(this.smoothedRightArmQuat);
     }
+
+    // ------------------------------------------------------------------
+    // 6. Real-Time Depth Occlusion Pass (Gate S5)
+    // ------------------------------------------------------------------
+    if (this.occlusionPass) {
+      this.occlusionPass.update(
+        landmarks,
+        drawInfo,
+        (lm, info) => this.unprojectLandmark(lm, info),
+        this.smoothedPosition.z,
+        shoulderSpan
+      );
+    }
   }
 
   /**
@@ -441,6 +474,11 @@ export class SceneManager {
     if (this.rightSleeveMesh) {
       this.rightSleeveMesh.geometry.dispose();
       this.rightSleeveMesh = null;
+    }
+
+    if (this.occlusionPass) {
+      this.occlusionPass.dispose();
+      this.occlusionPass = null;
     }
 
     if (this.renderer) {

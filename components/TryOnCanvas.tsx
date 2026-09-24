@@ -42,6 +42,10 @@ interface TryOnCanvasProps {
   isCameraActive: boolean;
   /** Whether to show the skeleton overlay. */
   showSkeleton?: boolean;
+  /** Whether depth occlusion is enabled (hands/arms in front of torso occlude garment). */
+  enableOcclusion?: boolean;
+  /** Whether to show debug wireframes for occlusion geometry. */
+  debugOcclusion?: boolean;
   /** Garment visual and sizing configuration. */
   garmentConfig?: GarmentConfig;
   /** Callback to report current FPS to parent. */
@@ -83,6 +87,8 @@ function applyGarmentConfig(sceneManager: SceneManager, config: GarmentConfig): 
 export default function TryOnCanvas({
   isCameraActive,
   showSkeleton = true,
+  enableOcclusion = true,
+  debugOcclusion = false,
   garmentConfig,
   onFpsUpdate,
   onError,
@@ -100,6 +106,8 @@ export default function TryOnCanvas({
   const rafIdRef = useRef<number>(0);
   const isRenderingRef = useRef(false);
   const showSkeletonRef = useRef(showSkeleton);
+  const enableOcclusionRef = useRef(enableOcclusion);
+  const debugOcclusionRef = useRef(debugOcclusion);
   const garmentConfigRef = useRef(garmentConfig);
 
   // Track the last result timestamp we reported stats for (avoid spamming)
@@ -109,6 +117,17 @@ export default function TryOnCanvas({
   useEffect(() => {
     showSkeletonRef.current = showSkeleton;
   }, [showSkeleton]);
+
+  useEffect(() => {
+    enableOcclusionRef.current = enableOcclusion;
+    debugOcclusionRef.current = debugOcclusion;
+    if (sceneManagerRef.current) {
+      sceneManagerRef.current.setOcclusionConfig({
+        enabled: enableOcclusion,
+        debugWireframe: debugOcclusion,
+      });
+    }
+  }, [enableOcclusion, debugOcclusion]);
 
   useEffect(() => {
     garmentConfigRef.current = garmentConfig;
@@ -356,6 +375,10 @@ export default function TryOnCanvas({
           if (threeCanvasRef.current) {
             const sm = new SceneManager();
             sm.init(threeCanvasRef.current);
+            sm.setOcclusionConfig({
+              enabled: enableOcclusionRef.current,
+              debugWireframe: debugOcclusionRef.current,
+            });
             if (garmentConfigRef.current) {
               applyGarmentConfig(sm, garmentConfigRef.current);
             }
