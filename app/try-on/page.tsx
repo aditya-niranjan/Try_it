@@ -1,22 +1,38 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import TryOnCanvas from '@/components/TryOnCanvas';
+import dynamic from 'next/dynamic';
+import type { TrackingStatus } from '@/components/TryOnCanvas';
+
+const TryOnCanvas = dynamic(() => import('@/components/TryOnCanvas'), {
+  ssr: false,
+  loading: () => (
+    <div className="relative w-full h-full rounded-2xl overflow-hidden border border-white/[0.06] bg-[#0a0a0f] flex items-center justify-center">
+      <div className="flex flex-col items-center gap-2">
+        <div className="w-6 h-6 border-2 border-violet-500/30 border-t-violet-400 rounded-full animate-spin" />
+        <span className="text-white/30 text-xs font-mono">Initializing canvas...</span>
+      </div>
+    </div>
+  ),
+});
 
 /**
  * /try-on — the ONLY page in Milestone 1.
  *
- * P1: Dark UI shell with working camera controls:
- * - TryOnCanvas renders mirrored webcam feed
- * - Start/Stop Camera buttons are functional
- * - Live FPS counter in header
- * - Error notifications for camera failures
+ * P2: Mirrored camera feed + 33-landmark skeleton tracking:
+ * - Real-time MediaPipe PoseLandmarker inference (GPU delegate)
+ * - One Euro filter landmark smoothing
+ * - Live skeleton overlay with toggle
+ * - Tracking status badges and FPS display
  */
 
 export default function TryOnPage() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [fps, setFps] = useState(0);
+  const [trackingStatus, setTrackingStatus] = useState<TrackingStatus>('idle');
+  const [showSkeleton, setShowSkeleton] = useState(true);
+  const [inferenceStats, setInferenceStats] = useState<{ ms: number; delegate: 'GPU' | 'CPU' } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleStartCamera = useCallback(() => {
@@ -29,22 +45,36 @@ export default function TryOnPage() {
     setIsCameraActive(false);
     setIsStarting(false);
     setFps(0);
+    setTrackingStatus('idle');
+    setInferenceStats(null);
   }, []);
 
   const handleFpsUpdate = useCallback((newFps: number) => {
     setFps(newFps);
   }, []);
 
+  const handleTrackingStatus = useCallback((status: TrackingStatus) => {
+    setTrackingStatus(status);
+  }, []);
+
+  const handleInferenceStats = useCallback((ms: number, delegate: 'GPU' | 'CPU') => {
+    setInferenceStats({ ms, delegate });
+  }, []);
+
   const handleError = useCallback((message: string) => {
     setError(message);
     setIsCameraActive(false);
     setIsStarting(false);
+    setTrackingStatus('idle');
+    setInferenceStats(null);
   }, []);
 
   const handleCameraStateChange = useCallback((isActive: boolean) => {
     setIsStarting(false);
     if (!isActive && isCameraActive) {
       setIsCameraActive(false);
+      setTrackingStatus('idle');
+      setInferenceStats(null);
     }
   }, [isCameraActive]);
 
@@ -77,8 +107,92 @@ export default function TryOnPage() {
           </div>
         </div>
 
-        {/* Live FPS counter */}
-        <div className="flex items-center gap-2">
+        {/* Status badges & Controls */}
+        <div className="flex items-center gap-2.5">
+          {/* Skeleton overlay toggle */}
+          {isCameraActive && (
+            <button
+              onClick={() => setShowSkeleton((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium transition-all cursor-pointer ${
+                showSkeleton
+                  ? 'bg-violet-500/15 border-violet-500/30 text-violet-300 hover:bg-violet-500/25'
+                  : 'bg-white/[0.04] border-white/[0.08] text-white/40 hover:text-white/70'
+              }`}
+              title="Toggle 33-landmark skeleton overlay"
+              id="btn-toggle-skeleton"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                {showSkeleton ? (
+                  <>
+                    <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+                    <line x1="2" y1="2" x2="22" y2="22" />
+                  </>
+                )}
+              </svg>
+              <span>{showSkeleton ? 'Skeleton ON' : 'Skeleton OFF'}</span>
+            </button>
+          )}
+
+          {/* Tracking status badge */}
+          {isCameraActive && trackingStatus !== 'idle' && (
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-medium transition-colors duration-200 ${
+                trackingStatus === 'active'
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                  : trackingStatus === 'loading'
+                  ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                  : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+              }`}
+              id="tracking-status-badge"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  trackingStatus === 'active'
+                    ? 'bg-emerald-400 animate-pulse'
+                    : trackingStatus === 'loading'
+                    ? 'bg-amber-400 animate-ping'
+                    : 'bg-rose-400'
+                }`}
+              />
+              <span>
+                {trackingStatus === 'active'
+                  ? 'Tracking (33 pts)'
+                  : trackingStatus === 'loading'
+                  ? 'Loading model...'
+                  : 'No pose'}
+              </span>
+            </div>
+          )}
+
+          {/* ML Inference Latency badge */}
+          {isCameraActive && inferenceStats && (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.03] text-[11px] font-mono text-white/50"
+              title={`Pose inference time: ${inferenceStats.ms}ms (${inferenceStats.delegate} delegate)`}
+              id="inference-stats-badge"
+            >
+              <span className="text-violet-400 font-semibold">{inferenceStats.ms}ms</span>
+              <span className="text-white/30 text-[10px]">({inferenceStats.delegate})</span>
+            </div>
+          )}
+
+          {/* Live FPS counter */}
           <div
             className={`px-3 py-1.5 rounded-lg border text-[11px] font-mono transition-colors duration-300 ${
               isCameraActive && fps > 0
@@ -142,9 +256,12 @@ export default function TryOnPage() {
         <div className="flex-1 min-w-0">
           <TryOnCanvas
             isCameraActive={isCameraActive}
+            showSkeleton={showSkeleton}
             onFpsUpdate={handleFpsUpdate}
             onError={handleError}
             onCameraStateChange={handleCameraStateChange}
+            onTrackingStatus={handleTrackingStatus}
+            onInferenceStats={handleInferenceStats}
           />
         </div>
 

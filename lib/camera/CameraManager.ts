@@ -71,7 +71,7 @@ const DEFAULT_CONSTRAINTS: CameraConstraints = {
   width: 1280,
   height: 720,
   facingMode: 'user',
-  frameRate: 30,
+  frameRate: 60,
 };
 
 export class CameraManager {
