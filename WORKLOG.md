@@ -2,4 +2,5 @@
 
 | Stage | Date | What was built | What was verified | What's broken |
 |-------|------|---------------|-------------------|---------------|
-| P0 | 2026-09-24 | Scaffold: /try-on page shell (dark UI), 8 lib module stubs, TryOnCanvas component, model download script, root redirect | `npm run build` ✓, `npm run lint` ✓, localhost:3000/try-on loads dark UI with disabled controls, pose_landmarker_lite.task + selfie_multiclass_256x256.tflite in public/models/ | Nothing — all P0 criteria pass |
+| P0 | 2026-09-24 | Scaffold: /try-on page shell (dark UI), 8 lib module stubs, TryOnCanvas component, model download script, root redirect | `npm run build` ✓, `npm run lint` ✓, localhost:3000/try-on loads dark UI with disabled controls, models in public/models/ | Nothing |
+| P1 | 2026-09-24 | Camera pipeline: CameraManager (getUserMedia + typed errors), TryOnCanvas render loop (mirrored selfie view), wired Start/Stop buttons, live FPS counter, error notifications | `npm run build` ✓, `npm run lint` ✓, Start Camera enabled, Stop Camera toggles correctly, FPS counter shows live value, placeholder returns on stop | Nothing |
