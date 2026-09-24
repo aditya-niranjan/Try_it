@@ -1,18 +1,19 @@
 /**
- * TShirtGenerator — procedural parametric T-shirt BufferGeometry.
+ * TShirtGenerator — procedural parametric T-shirt BufferGeometry with articulated sleeves.
  *
  * Responsibilities:
- *   - Generate a single Three.js BufferGeometry representing a realistic 3D T-shirt
- *   - Double-sided torso (front & back panels) with realistic front-to-back volume
- *   - Left and right angled sleeve tubes seamlessly attached at shoulder seams
- *   - Scooped neck opening (collar) and open hem
- *   - Clean normals and UV coordinates for fabric textures and lighting
- *   - Suitable for real-time vertex deformation and cloth physics
+ *   - Generates decoupled components for hierarchical 3D body rigging:
+ *       1. Torso body mesh with scooped neckline and armhole openings
+ *       2. Left sleeve mesh hinged at left shoulder joint (0, 0, 0)
+ *       3. Right sleeve mesh hinged at right shoulder joint (0, 0, 0)
+ *   - Clean normals and UV coordinates for realistic fabric rendering
+ *   - Double-sided volume suitable for real-time arm articulation and cloth simulation
  */
 
 import {
   BufferGeometry,
   Float32BufferAttribute,
+  Vector3,
 } from 'three';
 
 export interface TShirtParams {
@@ -36,6 +37,12 @@ export interface TShirtParams {
   subdivisionsY?: number;
 }
 
+export interface TShirtGeometries {
+  torso: BufferGeometry;
+  leftSleeve: BufferGeometry;
+  rightSleeve: BufferGeometry;
+}
+
 const DEFAULT_PARAMS: Required<TShirtParams> = {
   chestWidth: 1.0,
   length: 1.25,
@@ -50,21 +57,25 @@ const DEFAULT_PARAMS: Required<TShirtParams> = {
 
 export class TShirtGenerator {
   /**
-   * Generates a parametric 3D T-shirt geometry centered around the chest origin (0, 0, 0).
-   *
-   * Coordinates:
-   *   - X: Left (-X) to Right (+X) across shoulders
-   *   - Y: Bottom hem (-Y) to Collar/Shoulders (+Y)
-   *   - Z: Back (-Z) to Front (+Z)
+   * Generates articulated components: torso and two independent sleeve geometries.
    */
-  generate(userParams?: TShirtParams): BufferGeometry {
+  generate(userParams?: TShirtParams): TShirtGeometries {
     const params: Required<TShirtParams> = { ...DEFAULT_PARAMS, ...userParams };
 
+    const torso = this.generateTorso(params);
+    const leftSleeve = this.generateSleeve(true, params);
+    const rightSleeve = this.generateSleeve(false, params);
+
+    return { torso, leftSleeve, rightSleeve };
+  }
+
+  /**
+   * Generates the torso body geometry with armhole openings and scooped neckline.
+   */
+  generateTorso(params: Required<TShirtParams>): BufferGeometry {
     const {
       chestWidth,
       length,
-      sleeveLength,
-      sleeveRadius,
       neckDepth,
       neckWidth,
       torsoDepth,
@@ -83,233 +94,170 @@ export class TShirtGenerator {
     const hemY = -length * 0.5;
     const armholeBottomY = shoulderY - 0.38 * length;
 
-
-
-    // Helper to add a quad (two triangles)
     const addQuad = (i1: number, i2: number, i3: number, i4: number) => {
       indices.push(i1, i2, i4);
       indices.push(i2, i3, i4);
     };
 
-    // -------------------------------------------------------------
-    // 1. Torso Rings (Tube from hem up to shoulder level)
-    // -------------------------------------------------------------
-    // We create rings of vertices around the torso circumference.
-    // Ring segments = 2 * subdivisionsX
     const numRingSegments = subdivisionsX * 2;
     const numRings = subdivisionsY + 1;
-    const torsoVertexStart = positions.length / 3;
 
     for (let r = 0; r < numRings; r++) {
-      const vT = r / subdivisionsY; // 0 = hem, 1 = shoulder
+      const vT = r / subdivisionsY;
       const curY = hemY + vT * (shoulderY - hemY);
 
-      // Slight natural taper at waist, widening at chest and hips
+      // Slight waist taper and natural curvature
       const waistFactor = 1.0 - 0.08 * Math.sin(vT * Math.PI);
       const ringW = halfW * waistFactor;
       const ringD = halfD * (0.9 + 0.15 * Math.sin(vT * Math.PI));
 
       for (let s = 0; s < numRingSegments; s++) {
-        // Angle around circumference: 0 is right side, PI/2 is front, PI is left, 3PI/2 is back
         const angle = (s / numRingSegments) * Math.PI * 2;
         const cosA = Math.cos(angle);
         const sinA = Math.sin(angle);
 
-        // Curvature around elliptical torso
         const x = ringW * cosA;
         let z = ringD * sinA;
 
         // Front chest subtle outward dome (+Z)
         if (sinA > 0 && vT > 0.4 && vT < 0.9) {
-          z += 0.04 * Math.sin(angle) * Math.sin((vT - 0.4) / 0.5 * Math.PI);
+          z += 0.04 * Math.sin(angle) * Math.sin(((vT - 0.4) / 0.5) * Math.PI);
         }
 
-        // Scoop neck cut: at the very top front rings, taper Z back slightly for neckline
+        // Scoop neck cut at the front collar
         let y = curY;
-        if (vT > 0.85 && sinA > 0.4 && Math.abs(x) < neckWidth) {
-          const neckFactor = (1.0 - Math.abs(x) / neckWidth) * (vT - 0.85) / 0.15;
-          y -= neckDepth * neckFactor * 0.7;
+        if (vT > 0.85 && sinA > 0.35 && Math.abs(x) < neckWidth) {
+          const neckFactor = (1.0 - Math.abs(x) / neckWidth) * ((vT - 0.85) / 0.15);
+          y -= neckDepth * neckFactor * 0.75;
         }
 
         positions.push(x, y, z);
-        normals.push(cosA, 0.1, sinA); // preliminary normal
+        normals.push(cosA, 0.1, sinA);
 
-        // UV mapping: u corresponds to circumference [0, 1], v to height [0, 1]
-        const u = s / numRingSegments;
-        const v = vT;
-        uvs.push(u, v);
+        uvs.push(s / numRingSegments, vT);
       }
     }
 
-    // Connect rings with quads
+    // Connect rings, leaving side armholes for articulated sleeves
     for (let r = 0; r < numRings - 1; r++) {
-      const ring1 = torsoVertexStart + r * numRingSegments;
-      const ring2 = torsoVertexStart + (r + 1) * numRingSegments;
+      const ring1 = r * numRingSegments;
+      const ring2 = (r + 1) * numRingSegments;
 
       for (let s = 0; s < numRingSegments; s++) {
         const nextS = (s + 1) % numRingSegments;
 
-        // Leave armhole openings near the top (sides: left ~ angle PI, right ~ angle 0)
         const vT = r / subdivisionsY;
-        const isArmholeLevel = curYAtVT(vT, hemY, shoulderY) > armholeBottomY;
+        const curY = hemY + vT * (shoulderY - hemY);
+        const isArmholeLevel = curY > armholeBottomY;
         const angle = (s / numRingSegments) * Math.PI * 2;
-        const isRightArmhole = isArmholeLevel && (angle < Math.PI * 0.15 || angle > Math.PI * 1.85);
-        const isLeftArmhole = isArmholeLevel && Math.abs(angle - Math.PI) < Math.PI * 0.15;
 
-        // Skip quads where armhole openings exist so sleeves can connect
+        const isRightArmhole = isArmholeLevel && (angle < Math.PI * 0.16 || angle > Math.PI * 1.84);
+        const isLeftArmhole = isArmholeLevel && Math.abs(angle - Math.PI) < Math.PI * 0.16;
+
         if (isRightArmhole || isLeftArmhole) {
-          continue;
+          continue; // Armhole opening
         }
 
-        addQuad(
-          ring1 + s,
-          ring1 + nextS,
-          ring2 + nextS,
-          ring2 + s
-        );
+        addQuad(ring1 + s, ring1 + nextS, ring2 + nextS, ring2 + s);
       }
     }
 
-    // -------------------------------------------------------------
-    // 2. Left Sleeve (extends from left armhole outward & down)
-    // -------------------------------------------------------------
-    buildSleeve({
-      isLeft: true,
-      shoulderX: -halfW,
-      shoulderY: shoulderY - 0.05,
-      shoulderZ: 0,
-      armholeBottomY,
-      length: sleeveLength,
-      radius: sleeveRadius,
-      subdivisionsLen: 6,
-      subdivisionsRad: 10,
-      positions,
-      normals,
-      uvs,
-      indices,
-    });
-
-    // -------------------------------------------------------------
-    // 3. Right Sleeve (extends from right armhole outward & down)
-    // -------------------------------------------------------------
-    buildSleeve({
-      isLeft: false,
-      shoulderX: halfW,
-      shoulderY: shoulderY - 0.05,
-      shoulderZ: 0,
-      armholeBottomY,
-      length: sleeveLength,
-      radius: sleeveRadius,
-      subdivisionsLen: 6,
-      subdivisionsRad: 10,
-      positions,
-      normals,
-      uvs,
-      indices,
-    });
-
-    // -------------------------------------------------------------
-    // 4. Build BufferGeometry and Compute Accurate Normals
-    // -------------------------------------------------------------
     const geometry = new BufferGeometry();
     geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
     geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
     geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
     geometry.setIndex(indices);
-
     geometry.computeVertexNormals();
 
     return geometry;
   }
-}
 
-function curYAtVT(vt: number, hemY: number, shoulderY: number): number {
-  return hemY + vt * (shoulderY - hemY);
-}
+  /**
+   * Generates a sleeve tube whose local origin (0, 0, 0) is at the shoulder joint.
+   *
+   * The sleeve extends along its neutral axis (angled ~35° down from horizontal).
+   * In SceneManager, the sleeve is attached to a shoulder pivot group so rotating
+   * the pivot naturally articulates the sleeve in 3D.
+   */
+  generateSleeve(isLeft: boolean, params: Required<TShirtParams>): BufferGeometry {
+    const { sleeveLength, sleeveRadius } = params;
 
-interface SleeveConfig {
-  isLeft: boolean;
-  shoulderX: number;
-  shoulderY: number;
-  shoulderZ: number;
-  armholeBottomY: number;
-  length: number;
-  radius: number;
-  subdivisionsLen: number;
-  subdivisionsRad: number;
-  positions: number[];
-  normals: number[];
-  uvs: number[];
-  indices: number[];
-}
+    const positions: number[] = [];
+    const normals: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
 
-function buildSleeve(cfg: SleeveConfig): void {
-  const {
-    isLeft,
-    shoulderX,
-    shoulderY,
-    length,
-    radius,
-    subdivisionsLen,
-    subdivisionsRad,
-    positions,
-    normals,
-    uvs,
-    indices,
-  } = cfg;
+    const subdivisionsLen = 8;
+    const subdivisionsRad = 12;
+    const dirX = isLeft ? -1 : 1;
 
-  const sleeveStartIdx = positions.length / 3;
-  const dirX = isLeft ? -1 : 1;
+    // Neutral hang angle: 35 degrees down from horizontal
+    const angleDown = 0.60;
+    const cosDown = Math.cos(angleDown);
+    const sinDown = Math.sin(angleDown);
 
-  // Sleeve hangs outward and downward naturally (40 degrees downward slope)
-  const angleDown = 0.55; // radians downward
-  const cosDown = Math.cos(angleDown);
-  const sinDown = Math.sin(angleDown);
+    for (let l = 0; l <= subdivisionsLen; l++) {
+      const t = l / subdivisionsLen;
+      const segDist = t * sleeveLength;
 
-  for (let l = 0; l <= subdivisionsLen; l++) {
-    const t = l / subdivisionsLen;
-    // Current center along sleeve axis
-    const segDist = t * length;
-    const cx = shoulderX + dirX * segDist * cosDown;
-    const cy = shoulderY - segDist * sinDown;
-    const cz = 0;
+      // Center of ring along sleeve axis (origin at shoulder joint 0, 0, 0)
+      const cx = dirX * segDist * cosDown;
+      const cy = -segDist * sinDown;
+      const cz = 0;
 
-    // Slight tapering towards sleeve cuff
-    const curR = radius * (1.0 - t * 0.12);
+      // Top of sleeve starts slightly wider to overlap with torso armhole seam
+      const curR = sleeveRadius * (1.08 - t * 0.15);
 
-    for (let r = 0; r < subdivisionsRad; r++) {
-      const theta = (r / subdivisionsRad) * Math.PI * 2;
-      const cosT = Math.cos(theta);
-      const sinT = Math.sin(theta);
+      for (let r = 0; r < subdivisionsRad; r++) {
+        const theta = (r / subdivisionsRad) * Math.PI * 2;
+        const cosT = Math.cos(theta);
+        const sinT = Math.sin(theta);
 
-      // Ring perpendicular to sleeve direction
-      const vx = cx + cosT * curR * sinDown * dirX;
-      const vy = cy + cosT * curR * cosDown;
-      const vz = cz + sinT * curR;
+        // Ring vertices perpendicular to sleeve axis
+        const vx = cx + cosT * curR * sinDown * dirX;
+        const vy = cy + cosT * curR * cosDown;
+        const vz = cz + sinT * curR;
 
-      positions.push(vx, vy, vz);
-      normals.push(cosT * sinDown * dirX, cosT * cosDown, sinT);
-
-      // UV coordinates
-      uvs.push(r / subdivisionsRad, t);
-    }
-  }
-
-  // Connect sleeve rings with quads
-  for (let l = 0; l < subdivisionsLen; l++) {
-    const r1 = sleeveStartIdx + l * subdivisionsRad;
-    const r2 = sleeveStartIdx + (l + 1) * subdivisionsRad;
-
-    for (let r = 0; r < subdivisionsRad; r++) {
-      const nextR = (r + 1) % subdivisionsRad;
-
-      if (isLeft) {
-        indices.push(r1 + r, r2 + r, r2 + nextR);
-        indices.push(r1 + r, r2 + nextR, r1 + nextR);
-      } else {
-        indices.push(r1 + r, r2 + nextR, r2 + r);
-        indices.push(r1 + r, r1 + nextR, r2 + nextR);
+        positions.push(vx, vy, vz);
+        normals.push(cosT * sinDown * dirX, cosT * cosDown, sinT);
+        uvs.push(r / subdivisionsRad, t);
       }
     }
+
+    // Connect rings with quads
+    for (let l = 0; l < subdivisionsLen; l++) {
+      const r1 = l * subdivisionsRad;
+      const r2 = (l + 1) * subdivisionsRad;
+
+      for (let r = 0; r < subdivisionsRad; r++) {
+        const nextR = (r + 1) % subdivisionsRad;
+
+        if (isLeft) {
+          indices.push(r1 + r, r2 + r, r2 + nextR);
+          indices.push(r1 + r, r2 + nextR, r1 + nextR);
+        } else {
+          indices.push(r1 + r, r2 + nextR, r2 + r);
+          indices.push(r1 + r, r1 + nextR, r2 + nextR);
+        }
+      }
+    }
+
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+
+    return geometry;
+  }
+
+  /**
+   * Neutral direction vector of the sleeve in local torso space.
+   */
+  getNeutralSleeveDirection(isLeft: boolean): Vector3 {
+    const dirX = isLeft ? -1 : 1;
+    const angleDown = 0.60;
+    return new Vector3(dirX * Math.cos(angleDown), -Math.sin(angleDown), 0).normalize();
   }
 }

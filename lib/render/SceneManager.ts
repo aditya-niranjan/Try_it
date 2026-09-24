@@ -1,5 +1,5 @@
 /**
- * SceneManager — manages the Three.js 3D scene, camera, lights, and parametric garment.
+ * SceneManager — manages the Three.js 3D scene, camera, lights, and articulated garment.
  *
  * Responsibilities:
  *   - Transparent WebGLRenderer layered directly over the video canvas
@@ -9,6 +9,10 @@
  *       - Tracks 3D position of chest center
  *       - Scales shirt with shoulder span and torso height
  *       - Computes 3D orientation quaternion from shoulder & spine vectors (yaw, pitch, roll)
+ *   - Dynamic Arm & Sleeve Articulation (Gate S4):
+ *       - Tracks shoulder-to-elbow vectors for left and right arms
+ *       - Transforms arm vectors into local torso frame
+ *       - Rotates left and right shoulder pivot joints in real-time (raising arms, t-pose, rotation)
  *   - Smooth interpolation (lerp/slerp) for jitter-free garment motion
  *   - Dynamic garment parameter updates (color, size, sleeve length)
  */
@@ -48,8 +52,15 @@ export class SceneManager {
   private scene: Scene | null = null;
   private camera: PerspectiveCamera | null = null;
   private renderer: WebGLRenderer | null = null;
+
+  // Hierarchical Garment Assembly
   private garmentGroup: Group | null = null;
-  private tshirtMesh: Mesh | null = null;
+  private torsoMesh: Mesh | null = null;
+  private leftShoulderPivot: Group | null = null;
+  private leftSleeveMesh: Mesh | null = null;
+  private rightShoulderPivot: Group | null = null;
+  private rightSleeveMesh: Mesh | null = null;
+
   private tshirtGenerator: TShirtGenerator = new TShirtGenerator();
 
   private currentGarmentParams: TShirtParams = {
@@ -63,7 +74,7 @@ export class SceneManager {
     metalness: 0.05,
   };
 
-  // Target and smoothed transformation states
+  // Target and smoothed transformation states for Torso
   private targetPosition = new Vector3();
   private targetScale = new Vector3(1, 1, 1);
   private targetQuaternion = new Quaternion();
@@ -71,6 +82,10 @@ export class SceneManager {
   private smoothedPosition = new Vector3();
   private smoothedScale = new Vector3(1, 1, 1);
   private smoothedQuaternion = new Quaternion();
+
+  // Target and smoothed quaternions for Articulated Sleeves
+  private smoothedLeftArmQuat = new Quaternion();
+  private smoothedRightArmQuat = new Quaternion();
 
   private isPoseVisible = false;
   private hasFirstPose = false;
@@ -105,26 +120,22 @@ export class SceneManager {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
     // 4. Lighting Setup (Studio 3-Point Lighting)
-    // Ambient light: soft neutral base illumination
-    const ambientLight = new AmbientLight(0xffffff, 1.2);
+    const ambientLight = new AmbientLight(0xffffff, 1.25);
     this.scene.add(ambientLight);
 
-    // Key light: warm directional light from upper right
     const keyLight = new DirectionalLight(0xfffaed, 1.6);
     keyLight.position.set(2.5, 4.0, 3.5);
     this.scene.add(keyLight);
 
-    // Fill light: soft cool directional light from upper left
     const fillLight = new DirectionalLight(0xedf2ff, 0.8);
     fillLight.position.set(-2.5, 2.0, 2.5);
     this.scene.add(fillLight);
 
-    // Rim/Back light: highlights edges and cloth contours
     const rimLight = new DirectionalLight(0xffffff, 0.5);
     rimLight.position.set(0, -2.0, -2.0);
     this.scene.add(rimLight);
 
-    // 5. Garment Group & Mesh
+    // 5. Root Garment Group
     this.garmentGroup = new Group();
     this.garmentGroup.visible = false;
     this.scene.add(this.garmentGroup);
@@ -133,23 +144,53 @@ export class SceneManager {
   }
 
   /**
-   * Rebuilds the 3D T-shirt mesh using current parameters.
+   * Rebuilds the articulated 3D T-shirt assembly (Torso body + Left & Right sleeve pivots).
    */
   private rebuildGarmentMesh(): void {
     if (!this.garmentGroup) return;
 
-    // Dispose old mesh geometry and material
-    if (this.tshirtMesh) {
-      this.tshirtMesh.geometry.dispose();
-      this.garmentGroup.remove(this.tshirtMesh);
-      this.tshirtMesh = null;
+    // Dispose old meshes and clear children
+    if (this.torsoMesh) {
+      this.torsoMesh.geometry.dispose();
+      this.garmentGroup.remove(this.torsoMesh);
+      this.torsoMesh = null;
+    }
+    if (this.leftShoulderPivot) {
+      this.leftSleeveMesh?.geometry.dispose();
+      this.garmentGroup.remove(this.leftShoulderPivot);
+      this.leftShoulderPivot = null;
+      this.leftSleeveMesh = null;
+    }
+    if (this.rightShoulderPivot) {
+      this.rightSleeveMesh?.geometry.dispose();
+      this.garmentGroup.remove(this.rightShoulderPivot);
+      this.rightShoulderPivot = null;
+      this.rightSleeveMesh = null;
     }
 
-    const geometry = this.tshirtGenerator.generate(this.currentGarmentParams);
+    const { torso, leftSleeve, rightSleeve } = this.tshirtGenerator.generate(this.currentGarmentParams);
     const material = createGarmentMaterial(this.currentMaterialParams);
 
-    this.tshirtMesh = new Mesh(geometry, material);
-    this.garmentGroup.add(this.tshirtMesh);
+    // 1. Torso mesh
+    this.torsoMesh = new Mesh(torso, material);
+    this.garmentGroup.add(this.torsoMesh);
+
+    const halfW = (this.currentGarmentParams.chestWidth || 1.0) * 0.5;
+    const shoulderY = (this.currentGarmentParams.length || 1.25) * 0.5 - 0.05;
+
+    // 2. Left shoulder pivot & sleeve
+    this.leftShoulderPivot = new Group();
+    this.leftShoulderPivot.position.set(-halfW, shoulderY, 0);
+    this.leftSleeveMesh = new Mesh(leftSleeve, material);
+    this.leftShoulderPivot.add(this.leftSleeveMesh);
+    this.garmentGroup.add(this.leftShoulderPivot);
+
+    // 3. Right shoulder pivot & sleeve
+    this.rightShoulderPivot = new Group();
+    this.rightShoulderPivot.position.set(halfW, shoulderY, 0);
+    this.rightSleeveMesh = new Mesh(rightSleeve, material);
+    this.rightShoulderPivot.add(this.rightSleeveMesh);
+    this.garmentGroup.add(this.rightShoulderPivot);
   }
 
   /**
@@ -179,9 +220,9 @@ export class SceneManager {
         roughness: params.roughness ?? this.currentMaterialParams.roughness,
       };
 
-      if (this.tshirtMesh && !needsGeometryRebuild) {
+      if (this.torsoMesh && !needsGeometryRebuild) {
         updateGarmentMaterial(
-          this.tshirtMesh.material as import('three').MeshStandardMaterial,
+          this.torsoMesh.material as import('three').MeshStandardMaterial,
           this.currentMaterialParams
         );
       }
@@ -193,10 +234,12 @@ export class SceneManager {
   }
 
   /**
-   * Updates the 3D torso rig from MediaPipe smoothed landmarks.
+   * Updates the 3D torso rig and dynamic sleeve articulation from MediaPipe smoothed landmarks.
    *
    * MediaPipe landmark indices used:
    *   11: Left Shoulder, 12: Right Shoulder
+   *   13: Left Elbow,    14: Right Elbow
+   *   15: Left Wrist,    16: Right Wrist
    *   23: Left Hip,      24: Right Hip
    */
   updateTorso(landmarks: NormalizedLandmark[], drawInfo: TorsoDrawInfo): void {
@@ -211,15 +254,15 @@ export class SceneManager {
     const leftHip = landmarks[23];
     const rightHip = landmarks[24];
 
-    // Require good visibility on upper body landmarks
+    // Require good visibility on torso landmarks
     const minVisibility = 0.4;
-    const isVisible =
+    const isTorsoVisible =
       (leftShoulder.visibility ?? 1) > minVisibility &&
       (rightShoulder.visibility ?? 1) > minVisibility &&
       (leftHip.visibility ?? 1) > minVisibility &&
       (rightHip.visibility ?? 1) > minVisibility;
 
-    if (!isVisible) {
+    if (!isTorsoVisible) {
       this.isPoseVisible = false;
       this.garmentGroup.visible = false;
       return;
@@ -229,7 +272,7 @@ export class SceneManager {
     this.garmentGroup.visible = true;
 
     // ------------------------------------------------------------------
-    // 1. Convert normalized landmarks to 3D camera space coordinates
+    // 1. Unproject core landmarks into 3D camera space
     // ------------------------------------------------------------------
     const pLeftShoulder = this.unprojectLandmark(leftShoulder, drawInfo);
     const pRightShoulder = this.unprojectLandmark(rightShoulder, drawInfo);
@@ -247,26 +290,19 @@ export class SceneManager {
       .addVectors(pLeftHip, pRightHip)
       .multiplyScalar(0.5);
 
-    // The T-shirt mesh origin is centered at the chest
-    // (65% up from hips toward shoulders)
+    // T-shirt origin is centered at the upper-mid chest
     this.targetPosition.copy(shoulderCenter)
       .multiplyScalar(0.68)
       .addScaledVector(hipCenter, 0.32);
 
-    // Pull slightly forward in Z so the shirt drapes over the body
     this.targetPosition.z += 0.04;
 
     // ------------------------------------------------------------------
     // 3. Torso Scale
     // ------------------------------------------------------------------
-    // Shoulder span in 3D
     const shoulderSpan = pLeftShoulder.distanceTo(pRightShoulder);
-    // Torso length from shoulders to hips in 3D
     const torsoHeight = shoulderCenter.distanceTo(hipCenter);
 
-    // Mesh is generated with chestWidth = 1.0, length = 1.25
-    // Scale mesh to match actual user proportions:
-    // Scale factor with slight ease for natural fit
     const scaleX = shoulderSpan * 1.15;
     const scaleY = (torsoHeight / 0.52) * 0.95;
     const scaleZ = scaleX * 1.0;
@@ -276,37 +312,22 @@ export class SceneManager {
     // ------------------------------------------------------------------
     // 4. Torso Orientation (3D Basis Vectors -> Quaternion)
     // ------------------------------------------------------------------
-    // In mirrored selfie mode:
-    // Right shoulder is on screen right (+X), Left shoulder is on screen left (-X)
-    // Vector pointing across chest from left to right:
     const vAcross = new Vector3().subVectors(pRightShoulder, pLeftShoulder).normalize();
-
-    // Vector pointing down torso from shoulders to hips:
     const vSpine = new Vector3().subVectors(hipCenter, shoulderCenter).normalize();
-
-    // Chest normal (pointing outward from chest toward the camera):
-    // vAcross × (-vSpine) points forward (+Z)
     const vUp = new Vector3().copy(vSpine).negate();
     const vNormal = new Vector3().crossVectors(vAcross, vUp).normalize();
-
-    // Re-orthogonalize Up vector to guarantee an orthonormal basis
     const vOrthogonalUp = new Vector3().crossVectors(vNormal, vAcross).normalize();
 
-    // Build rotation matrix from basis:
-    // Column 0: X (Across), Column 1: Y (Up), Column 2: Z (Normal)
     const rotMatrix = new Matrix4().makeBasis(vAcross, vOrthogonalUp, vNormal);
     this.targetQuaternion.setFromRotationMatrix(rotMatrix);
 
-    // ------------------------------------------------------------------
-    // 5. Smooth Interpolation (Jitter Prevention)
-    // ------------------------------------------------------------------
+    // Smooth torso transform
     if (!this.hasFirstPose) {
       this.smoothedPosition.copy(this.targetPosition);
       this.smoothedScale.copy(this.targetScale);
       this.smoothedQuaternion.copy(this.targetQuaternion);
       this.hasFirstPose = true;
     } else {
-      // Responsive lerp rate for position/scale, slerp for rotation
       const posAlpha = 0.35;
       const rotAlpha = 0.30;
       this.smoothedPosition.lerp(this.targetPosition, posAlpha);
@@ -314,10 +335,64 @@ export class SceneManager {
       this.smoothedQuaternion.slerp(this.targetQuaternion, rotAlpha);
     }
 
-    // Apply to Three.js garment group
     this.garmentGroup.position.copy(this.smoothedPosition);
     this.garmentGroup.scale.copy(this.smoothedScale);
     this.garmentGroup.quaternion.copy(this.smoothedQuaternion);
+
+    // ------------------------------------------------------------------
+    // 5. Dynamic Arm & Sleeve Articulation (Gate S4)
+    // ------------------------------------------------------------------
+    const invTorsoQuat = this.smoothedQuaternion.clone().invert();
+
+    // --- Left Arm Articulation ---
+    const leftElbow = landmarks[13];
+    if (this.leftShoulderPivot && (leftElbow?.visibility ?? 0) > 0.35) {
+      const pLeftElbow = this.unprojectLandmark(leftElbow, drawInfo);
+      // Direction vector from shoulder to elbow in world space
+      const vLeftArmWorld = new Vector3().subVectors(pLeftElbow, pLeftShoulder).normalize();
+
+      // Transform to local torso coordinate space
+      const vLeftArmLocal = vLeftArmWorld.applyQuaternion(invTorsoQuat).normalize();
+
+      // Neutral left sleeve orientation vector
+      const vNeutral = this.tshirtGenerator.getNeutralSleeveDirection(true);
+
+      // Compute quaternion from neutral hang angle to current arm angle
+      const qArmTarget = new Quaternion().setFromUnitVectors(vNeutral, vLeftArmLocal);
+
+      this.smoothedLeftArmQuat.slerp(qArmTarget, 0.35);
+      this.leftShoulderPivot.quaternion.copy(this.smoothedLeftArmQuat);
+    } else if (this.leftShoulderPivot) {
+      // Ease back toward neutral rest pose if arm is hidden
+      const identityQuat = new Quaternion();
+      this.smoothedLeftArmQuat.slerp(identityQuat, 0.15);
+      this.leftShoulderPivot.quaternion.copy(this.smoothedLeftArmQuat);
+    }
+
+    // --- Right Arm Articulation ---
+    const rightElbow = landmarks[14];
+    if (this.rightShoulderPivot && (rightElbow?.visibility ?? 0) > 0.35) {
+      const pRightElbow = this.unprojectLandmark(rightElbow, drawInfo);
+      // Direction vector from shoulder to elbow in world space
+      const vRightArmWorld = new Vector3().subVectors(pRightElbow, pRightShoulder).normalize();
+
+      // Transform to local torso coordinate space
+      const vRightArmLocal = vRightArmWorld.applyQuaternion(invTorsoQuat).normalize();
+
+      // Neutral right sleeve orientation vector
+      const vNeutral = this.tshirtGenerator.getNeutralSleeveDirection(false);
+
+      // Compute quaternion from neutral hang angle to current arm angle
+      const qArmTarget = new Quaternion().setFromUnitVectors(vNeutral, vRightArmLocal);
+
+      this.smoothedRightArmQuat.slerp(qArmTarget, 0.35);
+      this.rightShoulderPivot.quaternion.copy(this.smoothedRightArmQuat);
+    } else if (this.rightShoulderPivot) {
+      // Ease back toward neutral rest pose if arm is hidden
+      const identityQuat = new Quaternion();
+      this.smoothedRightArmQuat.slerp(identityQuat, 0.15);
+      this.rightShoulderPivot.quaternion.copy(this.smoothedRightArmQuat);
+    }
   }
 
   /**
@@ -329,22 +404,18 @@ export class SceneManager {
   ): Vector3 {
     const { width, height, offsetX, offsetY, drawW, drawH, mirrored } = drawInfo;
 
-    // Apply mirroring if active (selfie view)
     const normX = mirrored ? 1.0 - lm.x : lm.x;
     const screenX = offsetX + normX * drawW;
     const screenY = offsetY + lm.y * drawH;
 
-    // Convert screen pixels to Normalized Device Coordinates (NDC) [-1, 1]
     const ndcX = (screenX / width) * 2.0 - 1.0;
     const ndcY = -((screenY / height) * 2.0 - 1.0);
 
-    // Compute visible frustum dimensions at camera target plane (z = 0, distance = cameraZ)
     const fovRadians = (this.cameraFov * Math.PI) / 180.0;
     const frustumHeightAtOrigin = 2.0 * this.cameraZ * Math.tan(fovRadians * 0.5);
     const aspect = width / height;
     const frustumWidthAtOrigin = frustumHeightAtOrigin * aspect;
 
-    // MediaPipe z is relative depth scaled roughly with image width
     const depthOffset = (lm.z || 0) * -1.8;
 
     const worldX = ndcX * (frustumWidthAtOrigin * 0.5);
@@ -376,14 +447,17 @@ export class SceneManager {
    * Clean up all Three.js resources, textures, and geometry.
    */
   dispose(): void {
-    if (this.tshirtMesh) {
-      this.tshirtMesh.geometry.dispose();
-      if (Array.isArray(this.tshirtMesh.material)) {
-        this.tshirtMesh.material.forEach((m) => m.dispose());
-      } else {
-        this.tshirtMesh.material.dispose();
-      }
-      this.tshirtMesh = null;
+    if (this.torsoMesh) {
+      this.torsoMesh.geometry.dispose();
+      this.torsoMesh = null;
+    }
+    if (this.leftSleeveMesh) {
+      this.leftSleeveMesh.geometry.dispose();
+      this.leftSleeveMesh = null;
+    }
+    if (this.rightSleeveMesh) {
+      this.rightSleeveMesh.geometry.dispose();
+      this.rightSleeveMesh = null;
     }
 
     if (this.renderer) {
@@ -394,6 +468,8 @@ export class SceneManager {
     this.scene = null;
     this.camera = null;
     this.garmentGroup = null;
+    this.leftShoulderPivot = null;
+    this.rightShoulderPivot = null;
     this.hasFirstPose = false;
   }
 }
