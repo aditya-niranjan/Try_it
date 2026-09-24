@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import type { TrackingStatus } from '@/components/TryOnCanvas';
+import type { TrackingStatus, GarmentConfig } from '@/components/TryOnCanvas';
 
 const TryOnCanvas = dynamic(() => import('@/components/TryOnCanvas'), {
   ssr: false,
@@ -19,11 +19,11 @@ const TryOnCanvas = dynamic(() => import('@/components/TryOnCanvas'), {
 /**
  * /try-on — the ONLY page in Milestone 1.
  *
- * P2: Mirrored camera feed + 33-landmark skeleton tracking:
- * - Real-time MediaPipe PoseLandmarker inference (GPU delegate)
- * - One Euro filter landmark smoothing
- * - Live skeleton overlay with toggle
- * - Tracking status badges and FPS display
+ * P3: 3D Parametric T-Shirt Torso Rig Tracking:
+ * - Real-time MediaPipe PoseLandmarker inference (Web Worker)
+ * - 3D procedural T-shirt BufferGeometry rendered via Three.js
+ * - Torso Rig tracking: chest position, shoulder span scale, 3D quaternion rotation
+ * - Live interactive garment settings: color, fit, and sleeve length
  */
 
 export default function TryOnPage() {
@@ -34,6 +34,13 @@ export default function TryOnPage() {
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [inferenceStats, setInferenceStats] = useState<{ ms: number; delegate: 'GPU' | 'CPU' } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Garment Configuration State
+  const [garmentConfig, setGarmentConfig] = useState<GarmentConfig>({
+    color: '#2563eb',
+    size: 'regular',
+    sleeveLength: 'short',
+  });
 
   const handleStartCamera = useCallback(() => {
     setError(null);
@@ -257,6 +264,7 @@ export default function TryOnPage() {
           <TryOnCanvas
             isCameraActive={isCameraActive}
             showSkeleton={showSkeleton}
+            garmentConfig={garmentConfig}
             onFpsUpdate={handleFpsUpdate}
             onError={handleError}
             onCameraStateChange={handleCameraStateChange}
@@ -265,53 +273,111 @@ export default function TryOnPage() {
           />
         </div>
 
-        {/* Side panel — garment parameters (disabled placeholder for P0) */}
-        <aside className="w-72 shrink-0 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5 flex flex-col gap-5 overflow-y-auto">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-white/30">
-            Garment Settings
-          </h2>
+        {/* Side panel — garment customization */}
+        <aside className="w-72 shrink-0 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5 flex flex-col gap-6 overflow-y-auto">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-white/50">
+              Garment Customizer
+            </h2>
+            <p className="text-[11px] text-white/30 mt-0.5">Procedural 3D T-shirt</p>
+          </div>
 
-          {/* Color picker placeholder */}
-          <div className="space-y-2">
-            <label className="text-xs text-white/40">Color</label>
-            <div className="flex gap-2">
-              {['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ffffff'].map(
-                (color) => (
-                  <button
-                    key={color}
-                    disabled
-                    className="w-7 h-7 rounded-full border-2 border-white/[0.08] opacity-40 cursor-not-allowed transition-opacity"
-                    style={{ backgroundColor: color }}
-                    aria-label={`Select color ${color}`}
-                  />
-                )
-              )}
+          {/* Color Palette */}
+          <div className="space-y-2.5">
+            <div className="flex justify-between items-center">
+              <label className="text-xs font-medium text-white/70">Fabric Color</label>
+              <span className="text-[10px] font-mono text-white/40">{garmentConfig.color}</span>
+            </div>
+            <div className="grid grid-cols-4 gap-2.5">
+              {[
+                { hex: '#2563eb', name: 'Cobalt' },
+                { hex: '#ef4444', name: 'Crimson' },
+                { hex: '#10b981', name: 'Emerald' },
+                { hex: '#8b5cf6', name: 'Violet' },
+                { hex: '#d97706', name: 'Amber' },
+                { hex: '#18181b', name: 'Stealth' },
+                { hex: '#475569', name: 'Slate' },
+                { hex: '#f8fafc', name: 'Ivory' },
+              ].map(({ hex, name }) => (
+                <button
+                  key={hex}
+                  onClick={() => setGarmentConfig((prev) => ({ ...prev, color: hex }))}
+                  className={`group relative h-9 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
+                    garmentConfig.color.toLowerCase() === hex.toLowerCase()
+                      ? 'border-white ring-2 ring-violet-500/60 scale-105'
+                      : 'border-white/10 hover:border-white/30 hover:scale-102'
+                  }`}
+                  style={{ backgroundColor: hex }}
+                  title={name}
+                  aria-label={`Select ${name} color`}
+                >
+                  {garmentConfig.color.toLowerCase() === hex.toLowerCase() && (
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke={hex === '#f8fafc' ? '#000000' : '#ffffff'}
+                      strokeWidth="3.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Size slider placeholders */}
-          {[
-            { label: 'Chest Width', value: 50 },
-            { label: 'Length', value: 60 },
-            { label: 'Sleeve Length', value: 40 },
-          ].map(({ label, value }) => (
-            <div key={label} className="space-y-2">
-              <div className="flex justify-between">
-                <label className="text-xs text-white/40">{label}</label>
-                <span className="text-xs text-white/20 font-mono">{value}%</span>
-              </div>
-              <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-white/10"
-                  style={{ width: `${value}%` }}
-                />
-              </div>
+          {/* Fit / Sizing Selector */}
+          <div className="space-y-2.5">
+            <label className="text-xs font-medium text-white/70">Body Fit</label>
+            <div className="grid grid-cols-3 gap-1.5 p-1 bg-white/[0.04] border border-white/[0.06] rounded-xl">
+              {(['slim', 'regular', 'oversized'] as const).map((size) => (
+                <button
+                  key={size}
+                  onClick={() => setGarmentConfig((prev) => ({ ...prev, size }))}
+                  className={`py-1.5 rounded-lg text-xs font-medium capitalize transition-all cursor-pointer ${
+                    garmentConfig.size === size
+                      ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow'
+                      : 'text-white/40 hover:text-white/80'
+                  }`}
+                >
+                  {size}
+                </button>
+              ))}
             </div>
-          ))}
+          </div>
 
-          <div className="mt-auto pt-4 border-t border-white/[0.06]">
-            <p className="text-[11px] text-white/20 text-center">
-              Controls will be enabled after tracking is live
+          {/* Sleeve Length Selector */}
+          <div className="space-y-2.5">
+            <label className="text-xs font-medium text-white/70">Sleeve Style</label>
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-white/[0.04] border border-white/[0.06] rounded-xl">
+              {(['short', 'medium'] as const).map((sleeve) => (
+                <button
+                  key={sleeve}
+                  onClick={() => setGarmentConfig((prev) => ({ ...prev, sleeveLength: sleeve }))}
+                  className={`py-1.5 rounded-lg text-xs font-medium capitalize transition-all cursor-pointer ${
+                    garmentConfig.sleeveLength === sleeve
+                      ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow'
+                      : 'text-white/40 hover:text-white/80'
+                  }`}
+                >
+                  {sleeve}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Live Torso Anchoring Status Card */}
+          <div className="mt-auto p-3.5 rounded-xl border border-white/[0.06] bg-white/[0.02] flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse" />
+              <span className="text-xs font-medium text-white/80">3D Torso Rig</span>
+            </div>
+            <p className="text-[11px] text-white/40 leading-relaxed">
+              T-shirt dynamically anchors to shoulders & spine. Move closer/farther, lean, or rotate to test 3D tracking.
             </p>
           </div>
         </aside>

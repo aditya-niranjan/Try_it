@@ -4,18 +4,21 @@ import { useRef, useEffect, useCallback } from 'react';
 import { CameraManager, CameraError } from '@/lib/camera/CameraManager';
 import { PoseTracker } from '@/lib/tracking/PoseTracker';
 import { SkeletonRenderer } from '@/lib/tracking/SkeletonRenderer';
+import { SceneManager } from '@/lib/render/SceneManager';
 
 /**
- * TryOnCanvas — owns video element, canvas, pose tracking, and the render loop.
+ * TryOnCanvas — owns video element, 2D canvas, Three.js 3D viewport, and the render loop.
  *
  * PERFORMANCE ARCHITECTURE (60 FPS DECOUPLED):
  *
  *   1. rAF Render Loop (Main Thread, 60fps):
- *      - Draws mirrored video frame (~0.5ms)
+ *      - Draws mirrored video frame to 2D canvas (~0.5ms)
  *      - Reads latest smoothed pose result (non-blocking, ~0ms)
  *      - Draws skeleton overlay (~0.5ms)
  *      - Dispatches video frame to Web Worker via zero-copy ImageBitmap transfer (~0ms)
- *      - Total main-thread frame execution: ~1.5ms → 60 FPS guaranteed
+ *      - Updates 3D Torso rig in Three.js SceneManager (~0.2ms)
+ *      - Renders 3D transparent garment mesh over video (~1-2ms)
+ *      - Total main-thread frame execution: ~2-3ms → solid 60 FPS guaranteed
  *
  *   2. Dedicated Web Worker Thread (Background, ~25-40fps):
  *      - Executes MediaPipe PoseLandmarker.detectForVideo off the main thread
@@ -25,11 +28,22 @@ import { SkeletonRenderer } from '@/lib/tracking/SkeletonRenderer';
 
 export type TrackingStatus = 'idle' | 'loading' | 'active' | 'lost';
 
+export interface GarmentConfig {
+  /** Hex color code (e.g. '#2563eb'). */
+  color: string;
+  /** Shirt body fit. */
+  size: 'slim' | 'regular' | 'oversized';
+  /** Sleeve length. */
+  sleeveLength: 'short' | 'medium';
+}
+
 interface TryOnCanvasProps {
   /** Whether the camera should be active. */
   isCameraActive: boolean;
   /** Whether to show the skeleton overlay. */
   showSkeleton?: boolean;
+  /** Garment visual and sizing configuration. */
+  garmentConfig?: GarmentConfig;
   /** Callback to report current FPS to parent. */
   onFpsUpdate?: (fps: number) => void;
   /** Callback when a camera error occurs. */
@@ -45,9 +59,31 @@ interface TryOnCanvasProps {
 /** DPR cap per architecture doc. */
 const MAX_DPR = 1.5;
 
+function applyGarmentConfig(sceneManager: SceneManager, config: GarmentConfig): void {
+  let chestWidth = 1.0;
+  let length = 1.25;
+  if (config.size === 'slim') {
+    chestWidth = 0.90;
+    length = 1.18;
+  } else if (config.size === 'oversized') {
+    chestWidth = 1.15;
+    length = 1.35;
+  }
+
+  const sleeveLength = config.sleeveLength === 'short' ? 0.32 : 0.46;
+
+  sceneManager.setGarmentParams({
+    chestWidth,
+    length,
+    sleeveLength,
+    color: config.color,
+  });
+}
+
 export default function TryOnCanvas({
   isCameraActive,
   showSkeleton = true,
+  garmentConfig,
   onFpsUpdate,
   onError,
   onCameraStateChange,
@@ -56,20 +92,30 @@ export default function TryOnCanvas({
 }: TryOnCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const threeCanvasRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef<CameraManager | null>(null);
   const trackerRef = useRef<PoseTracker | null>(null);
+  const sceneManagerRef = useRef<SceneManager | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const rafIdRef = useRef<number>(0);
   const isRenderingRef = useRef(false);
   const showSkeletonRef = useRef(showSkeleton);
+  const garmentConfigRef = useRef(garmentConfig);
 
   // Track the last result timestamp we reported stats for (avoid spamming)
   const lastStatsTimestampRef = useRef<number>(-1);
 
-  // Keep showSkeleton ref in sync
+  // Keep refs in sync
   useEffect(() => {
     showSkeletonRef.current = showSkeleton;
   }, [showSkeleton]);
+
+  useEffect(() => {
+    garmentConfigRef.current = garmentConfig;
+    if (sceneManagerRef.current && garmentConfig) {
+      applyGarmentConfig(sceneManagerRef.current, garmentConfig);
+    }
+  }, [garmentConfig]);
 
   // FPS tracking
   const fpsFrameCountRef = useRef(0);
@@ -121,15 +167,7 @@ export default function TryOnCanvas({
   }, []);
 
   /**
-   * The render loop — draws mirrored video + skeleton overlay.
-   *
-   * This loop does ZERO ML inference. It only:
-   *   1. Draws the video frame (~0.5ms)
-   *   2. Reads tracker.latestResult (a simple property read, ~0ms)
-   *   3. Draws skeleton dots/lines (~0.5ms)
-   *   4. Calculates FPS (~0ms)
-   *
-   * Total: ~1-2ms per frame → solid 60fps
+   * The 60 FPS Render Loop — draws video, overlays skeleton, updates 3D torso, and renders Three.js garment.
    */
   const startRenderLoop = useCallback(() => {
     const canvas = canvasRef.current;
@@ -157,7 +195,7 @@ export default function TryOnCanvas({
       const cw = containerRect.width;
       const ch = containerRect.height;
 
-      // Resize canvas if needed
+      // Resize 2D canvas if needed
       const targetW = Math.round(cw * dpr);
       const targetH = Math.round(ch * dpr);
       if (canvas.width !== targetW || canvas.height !== targetH) {
@@ -165,6 +203,12 @@ export default function TryOnCanvas({
         canvas.height = targetH;
         canvas.style.width = `${cw}px`;
         canvas.style.height = `${ch}px`;
+      }
+
+      // Resize Three.js overlay renderer if needed
+      const sceneManager = sceneManagerRef.current;
+      if (sceneManager) {
+        sceneManager.resize(cw, ch);
       }
 
       // Calculate aspect-correct draw dimensions (cover mode)
@@ -185,7 +229,7 @@ export default function TryOnCanvas({
         offsetY = (ch - drawH) / 2;
       }
 
-      // Draw mirrored video frame
+      // 1. Draw mirrored video frame on 2D canvas
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = '#0a0a0f';
       ctx.fillRect(0, 0, cw, ch);
@@ -196,15 +240,16 @@ export default function TryOnCanvas({
       ctx.drawImage(video, offsetX, offsetY, drawW, drawH);
       ctx.restore();
 
-      // --- Pose Tracking: offload frame to worker and read latest result ---
+      // 2. Dispatch frame to Web Worker (non-blocking zero-copy ImageBitmap)
       const tracker = trackerRef.current;
       if (tracker?.isReady) {
-        // Asynchronously dispatch frame to worker thread if not busy (non-blocking)
         tracker.sendFrame(video);
 
+        // 3. Read latest smoothed pose landmarks
         const currentPose = tracker.latestResult;
 
         if (currentPose?.smoothedLandmarks) {
+          // Draw skeleton if enabled
           if (showSkeletonRef.current) {
             SkeletonRenderer.drawSkeleton(ctx, currentPose.smoothedLandmarks, {
               width: cw,
@@ -216,9 +261,23 @@ export default function TryOnCanvas({
               mirrored: true,
             });
           }
+
+          // Update 3D Torso rig in Three.js
+          if (sceneManager) {
+            sceneManager.updateTorso(currentPose.smoothedLandmarks, {
+              width: cw,
+              height: ch,
+              offsetX,
+              offsetY,
+              drawW,
+              drawH,
+              mirrored: true,
+            });
+          }
+
           onTrackingStatus?.('active');
 
-          // Report inference stats (only when we get a new result)
+          // Report inference telemetry
           if (currentPose.timestampMs !== lastStatsTimestampRef.current) {
             lastStatsTimestampRef.current = currentPose.timestampMs;
             onInferenceStats?.(
@@ -228,10 +287,26 @@ export default function TryOnCanvas({
           }
         } else if (currentPose && !currentPose.smoothedLandmarks) {
           onTrackingStatus?.('lost');
+          if (sceneManager) {
+            sceneManager.updateTorso([], {
+              width: cw,
+              height: ch,
+              offsetX,
+              offsetY,
+              drawW,
+              drawH,
+              mirrored: true,
+            });
+          }
         }
       }
 
-      // FPS calculation (update every second)
+      // 4. Render 3D Three.js Garment Overlay
+      if (sceneManager) {
+        sceneManager.render();
+      }
+
+      // 5. FPS calculation (every second)
       fpsFrameCountRef.current++;
       const now = performance.now();
       const elapsed = now - fpsLastTimeRef.current;
@@ -276,10 +351,21 @@ export default function TryOnCanvas({
         .then(async (video) => {
           if (cancelled) return;
           videoRef.current = video;
+
+          // Initialize Three.js 3D SceneManager on the overlay canvas
+          if (threeCanvasRef.current) {
+            const sm = new SceneManager();
+            sm.init(threeCanvasRef.current);
+            if (garmentConfigRef.current) {
+              applyGarmentConfig(sm, garmentConfigRef.current);
+            }
+            sceneManagerRef.current = sm;
+          }
+
           startRenderLoop();
           onCameraStateChange?.(true);
 
-          // Initialize pose tracker
+          // Initialize pose tracker worker
           onTrackingStatus?.('loading');
           try {
             const tracker = new PoseTracker();
@@ -314,6 +400,12 @@ export default function TryOnCanvas({
         trackerRef.current.destroy();
         trackerRef.current = null;
       }
+
+      if (sceneManagerRef.current) {
+        sceneManagerRef.current.dispose();
+        sceneManagerRef.current = null;
+      }
+
       lastStatsTimestampRef.current = -1;
 
       onCameraStateChange?.(false);
@@ -338,6 +430,12 @@ export default function TryOnCanvas({
         trackerRef.current.destroy();
         trackerRef.current = null;
       }
+
+      if (sceneManagerRef.current) {
+        sceneManagerRef.current.dispose();
+        sceneManagerRef.current = null;
+      }
+
       lastStatsTimestampRef.current = -1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -369,9 +467,16 @@ export default function TryOnCanvas({
       ref={containerRef}
       className="relative w-full h-full rounded-2xl overflow-hidden border border-white/[0.06] bg-[#0a0a0f]"
     >
+      {/* 2D Video & Skeleton Canvas */}
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full"
+      />
+
+      {/* 3D WebGL Three.js Garment Overlay Canvas */}
+      <canvas
+        ref={threeCanvasRef}
+        className="absolute inset-0 w-full h-full pointer-events-none"
       />
 
       {/* Subtle vignette overlay */}
