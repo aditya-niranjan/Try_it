@@ -3,18 +3,14 @@
  *
  * Responsibilities:
  *   - Transparent WebGLRenderer layered directly over the video canvas
- *   - PerspectiveCamera calibrated to standard webcam field of view
- *   - Studio 3-point lighting setup for realistic fabric rendering
- *   - Real-time 3D Torso Rig anchoring:
- *       - Tracks 3D position of chest center
- *       - Scales shirt with shoulder span and torso height
- *       - Computes 3D orientation quaternion from shoulder & spine vectors (yaw, pitch, roll)
- *   - Dynamic Arm & Sleeve Articulation (Gate S4):
- *       - Tracks shoulder-to-elbow vectors for left and right arms
- *       - Transforms arm vectors into local torso frame
- *       - Rotates left and right shoulder pivot joints in real-time (raising arms, t-pose, rotation)
- *   - Smooth interpolation (lerp/slerp) for jitter-free garment motion
- *   - Dynamic garment parameter updates (color, size, sleeve length)
+ *   - PerspectiveCamera calibrated to webcam FOV and plane projection
+ *   - Balanced 3-point studio lighting for realistic fabric shading and depth
+ *   - Exact 1:1 Torso Rig Scaling:
+ *       - Anchors shirt collar directly to the user's shoulder center
+ *       - Scales shirt uniformly to the detected shoulder span (scale = shoulderSpan)
+ *       - Eliminates oversized clipping and projection blowup
+ *   - Anatomically stable 3D rotation (yaw, pitch, roll) from body landmarks
+ *   - Dynamic Arm & Sleeve Articulation following shoulder-to-elbow vectors
  */
 
 import {
@@ -26,8 +22,8 @@ import {
   Group,
   Mesh,
   Vector3,
-  Matrix4,
   Quaternion,
+  Euler,
   SRGBColorSpace,
 } from 'three';
 import { TShirtGenerator, type TShirtParams } from '../garment/TShirtGenerator';
@@ -66,12 +62,12 @@ export class SceneManager {
   private currentGarmentParams: TShirtParams = {
     chestWidth: 1.0,
     length: 1.25,
-    sleeveLength: 0.42,
+    sleeveLength: 0.38,
   };
   private currentMaterialParams: GarmentMaterialParams = {
     color: '#2563eb',
-    roughness: 0.78,
-    metalness: 0.05,
+    roughness: 0.72,
+    metalness: 0.04,
   };
 
   // Target and smoothed transformation states for Torso
@@ -91,8 +87,8 @@ export class SceneManager {
   private hasFirstPose = false;
 
   /** Camera parameters. */
-  private readonly cameraFov = 50; // degrees vertical FOV
-  private readonly cameraZ = 3.0;  // camera placed at z = 3
+  private readonly cameraFov = 45; // degrees vertical FOV
+  private readonly cameraZ = 4.0;  // camera placed at z = 4.0
 
   /**
    * Initialize Three.js scene, renderer, camera, and lighting.
@@ -119,20 +115,24 @@ export class SceneManager {
     this.renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
-    // 4. Lighting Setup (Studio 3-Point Lighting)
-    const ambientLight = new AmbientLight(0xffffff, 1.25);
+    // 4. Lighting Setup (Studio 3-Point Lighting with realistic contrast)
+    // Ambient light: soft base fill (not washed out)
+    const ambientLight = new AmbientLight(0xffffff, 0.5);
     this.scene.add(ambientLight);
 
-    const keyLight = new DirectionalLight(0xfffaed, 1.6);
-    keyLight.position.set(2.5, 4.0, 3.5);
+    // Key light: warm directional light from upper right, gives shape and folds
+    const keyLight = new DirectionalLight(0xfff6ea, 1.4);
+    keyLight.position.set(3.0, 4.5, 3.5);
     this.scene.add(keyLight);
 
-    const fillLight = new DirectionalLight(0xedf2ff, 0.8);
-    fillLight.position.set(-2.5, 2.0, 2.5);
+    // Fill light: soft cool directional light from upper left
+    const fillLight = new DirectionalLight(0xe8f0fe, 0.6);
+    fillLight.position.set(-3.0, 2.0, 2.5);
     this.scene.add(fillLight);
 
-    const rimLight = new DirectionalLight(0xffffff, 0.5);
-    rimLight.position.set(0, -2.0, -2.0);
+    // Rim/Back light: highlights collar and contours
+    const rimLight = new DirectionalLight(0xffffff, 0.4);
+    rimLight.position.set(0, 3.0, -3.0);
     this.scene.add(rimLight);
 
     // 5. Root Garment Group
@@ -175,8 +175,9 @@ export class SceneManager {
     this.torsoMesh = new Mesh(torso, material);
     this.garmentGroup.add(this.torsoMesh);
 
+    // Shoulder pivots: Left at -0.5, Right at +0.5
     const halfW = (this.currentGarmentParams.chestWidth || 1.0) * 0.5;
-    const shoulderY = (this.currentGarmentParams.length || 1.25) * 0.5 - 0.05;
+    const shoulderY = -0.04;
 
     // 2. Left shoulder pivot & sleeve
     this.leftShoulderPivot = new Group();
@@ -235,12 +236,6 @@ export class SceneManager {
 
   /**
    * Updates the 3D torso rig and dynamic sleeve articulation from MediaPipe smoothed landmarks.
-   *
-   * MediaPipe landmark indices used:
-   *   11: Left Shoulder, 12: Right Shoulder
-   *   13: Left Elbow,    14: Right Elbow
-   *   15: Left Wrist,    16: Right Wrist
-   *   23: Left Hip,      24: Right Hip
    */
   updateTorso(landmarks: NormalizedLandmark[], drawInfo: TorsoDrawInfo): void {
     if (!this.camera || !this.garmentGroup || landmarks.length < 25) {
@@ -254,13 +249,11 @@ export class SceneManager {
     const leftHip = landmarks[23];
     const rightHip = landmarks[24];
 
-    // Require good visibility on torso landmarks
-    const minVisibility = 0.4;
+    // Visibility guard
+    const minVisibility = 0.35;
     const isTorsoVisible =
       (leftShoulder.visibility ?? 1) > minVisibility &&
-      (rightShoulder.visibility ?? 1) > minVisibility &&
-      (leftHip.visibility ?? 1) > minVisibility &&
-      (rightHip.visibility ?? 1) > minVisibility;
+      (rightShoulder.visibility ?? 1) > minVisibility;
 
     if (!isTorsoVisible) {
       this.isPoseVisible = false;
@@ -280,59 +273,64 @@ export class SceneManager {
     const pRightHip = this.unprojectLandmark(rightHip, drawInfo);
 
     // ------------------------------------------------------------------
-    // 2. Chest center position
+    // 2. Collar & Shoulder Center Position
     // ------------------------------------------------------------------
+    // In mirrored selfie mode:
+    // Left shoulder landmark (11) is on the user's left on screen
+    // Right shoulder landmark (12) is on the user's right on screen
     const shoulderCenter = new Vector3()
       .addVectors(pLeftShoulder, pRightShoulder)
       .multiplyScalar(0.5);
 
-    const hipCenter = new Vector3()
-      .addVectors(pLeftHip, pRightHip)
-      .multiplyScalar(0.5);
-
-    // T-shirt origin is centered at the upper-mid chest
-    this.targetPosition.copy(shoulderCenter)
-      .multiplyScalar(0.68)
-      .addScaledVector(hipCenter, 0.32);
-
-    this.targetPosition.z += 0.04;
+    // Anchors the collar line of the T-shirt directly at the shoulders
+    this.targetPosition.copy(shoulderCenter);
+    // Move slightly forward so front fabric drapes over body
+    this.targetPosition.z += 0.02;
 
     // ------------------------------------------------------------------
-    // 3. Torso Scale
+    // 3. Proportional Scale (Directly anchored to shoulder span)
     // ------------------------------------------------------------------
+    // The 3D model base shoulder width is 1.0 (from -0.5 to +0.5).
+    // Therefore: scale = actualShoulderSpan ensures exact 1:1 fit!
     const shoulderSpan = pLeftShoulder.distanceTo(pRightShoulder);
-    const torsoHeight = shoulderCenter.distanceTo(hipCenter);
 
-    const scaleX = shoulderSpan * 1.15;
-    const scaleY = (torsoHeight / 0.52) * 0.95;
-    const scaleZ = scaleX * 1.0;
+    // Add 15% ease for comfortable clothing fit
+    const baseScale = Math.max(0.2, shoulderSpan * 1.15);
 
-    this.targetScale.set(scaleX, scaleY, scaleZ);
+    this.targetScale.set(baseScale, baseScale, baseScale);
 
     // ------------------------------------------------------------------
-    // 4. Torso Orientation (3D Basis Vectors -> Quaternion)
+    // 4. Stable 3D Rotation (Euler: Roll, Yaw, Pitch)
     // ------------------------------------------------------------------
-    const vAcross = new Vector3().subVectors(pRightShoulder, pLeftShoulder).normalize();
-    const vSpine = new Vector3().subVectors(hipCenter, shoulderCenter).normalize();
-    const vUp = new Vector3().copy(vSpine).negate();
-    const vNormal = new Vector3().crossVectors(vAcross, vUp).normalize();
-    const vOrthogonalUp = new Vector3().crossVectors(vNormal, vAcross).normalize();
+    // Roll: tilt angle of the shoulder line in the screen plane
+    const deltaX = pRightShoulder.x - pLeftShoulder.x;
+    const deltaY = pRightShoulder.y - pLeftShoulder.y;
+    const roll = Math.atan2(deltaY, deltaX);
 
-    const rotMatrix = new Matrix4().makeBasis(vAcross, vOrthogonalUp, vNormal);
-    this.targetQuaternion.setFromRotationMatrix(rotMatrix);
+    // Yaw: body turn left/right (from relative Z difference of shoulders)
+    // Clamped to prevent extreme flips
+    const zDiff = (rightShoulder.z ?? 0) - (leftShoulder.z ?? 0);
+    const yaw = Math.max(-0.6, Math.min(0.6, zDiff * 1.6));
 
-    // Smooth torso transform
+    // Pitch: forward/backward torso lean
+    const hipCenter = new Vector3().addVectors(pLeftHip, pRightHip).multiplyScalar(0.5);
+    const zTilt = shoulderCenter.z - hipCenter.z;
+    const pitch = Math.max(-0.35, Math.min(0.35, zTilt * 0.9));
+
+    // Compose Euler angles: Y (yaw) -> X (pitch) -> Z (roll)
+    const euler = new Euler(pitch, yaw, roll, 'YXZ');
+    this.targetQuaternion.setFromEuler(euler);
+
+    // Smooth torso transform with lerp / slerp
     if (!this.hasFirstPose) {
       this.smoothedPosition.copy(this.targetPosition);
       this.smoothedScale.copy(this.targetScale);
       this.smoothedQuaternion.copy(this.targetQuaternion);
       this.hasFirstPose = true;
     } else {
-      const posAlpha = 0.35;
-      const rotAlpha = 0.30;
-      this.smoothedPosition.lerp(this.targetPosition, posAlpha);
-      this.smoothedScale.lerp(this.targetScale, posAlpha);
-      this.smoothedQuaternion.slerp(this.targetQuaternion, rotAlpha);
+      this.smoothedPosition.lerp(this.targetPosition, 0.35);
+      this.smoothedScale.lerp(this.targetScale, 0.30);
+      this.smoothedQuaternion.slerp(this.targetQuaternion, 0.28);
     }
 
     this.garmentGroup.position.copy(this.smoothedPosition);
@@ -348,22 +346,14 @@ export class SceneManager {
     const leftElbow = landmarks[13];
     if (this.leftShoulderPivot && (leftElbow?.visibility ?? 0) > 0.35) {
       const pLeftElbow = this.unprojectLandmark(leftElbow, drawInfo);
-      // Direction vector from shoulder to elbow in world space
       const vLeftArmWorld = new Vector3().subVectors(pLeftElbow, pLeftShoulder).normalize();
-
-      // Transform to local torso coordinate space
-      const vLeftArmLocal = vLeftArmWorld.applyQuaternion(invTorsoQuat).normalize();
-
-      // Neutral left sleeve orientation vector
+      const vLeftArmLocal = vLeftArmWorld.clone().applyQuaternion(invTorsoQuat).normalize();
       const vNeutral = this.tshirtGenerator.getNeutralSleeveDirection(true);
 
-      // Compute quaternion from neutral hang angle to current arm angle
       const qArmTarget = new Quaternion().setFromUnitVectors(vNeutral, vLeftArmLocal);
-
-      this.smoothedLeftArmQuat.slerp(qArmTarget, 0.35);
+      this.smoothedLeftArmQuat.slerp(qArmTarget, 0.30);
       this.leftShoulderPivot.quaternion.copy(this.smoothedLeftArmQuat);
     } else if (this.leftShoulderPivot) {
-      // Ease back toward neutral rest pose if arm is hidden
       const identityQuat = new Quaternion();
       this.smoothedLeftArmQuat.slerp(identityQuat, 0.15);
       this.leftShoulderPivot.quaternion.copy(this.smoothedLeftArmQuat);
@@ -373,22 +363,14 @@ export class SceneManager {
     const rightElbow = landmarks[14];
     if (this.rightShoulderPivot && (rightElbow?.visibility ?? 0) > 0.35) {
       const pRightElbow = this.unprojectLandmark(rightElbow, drawInfo);
-      // Direction vector from shoulder to elbow in world space
       const vRightArmWorld = new Vector3().subVectors(pRightElbow, pRightShoulder).normalize();
-
-      // Transform to local torso coordinate space
-      const vRightArmLocal = vRightArmWorld.applyQuaternion(invTorsoQuat).normalize();
-
-      // Neutral right sleeve orientation vector
+      const vRightArmLocal = vRightArmWorld.clone().applyQuaternion(invTorsoQuat).normalize();
       const vNeutral = this.tshirtGenerator.getNeutralSleeveDirection(false);
 
-      // Compute quaternion from neutral hang angle to current arm angle
       const qArmTarget = new Quaternion().setFromUnitVectors(vNeutral, vRightArmLocal);
-
-      this.smoothedRightArmQuat.slerp(qArmTarget, 0.35);
+      this.smoothedRightArmQuat.slerp(qArmTarget, 0.30);
       this.rightShoulderPivot.quaternion.copy(this.smoothedRightArmQuat);
     } else if (this.rightShoulderPivot) {
-      // Ease back toward neutral rest pose if arm is hidden
       const identityQuat = new Quaternion();
       this.smoothedRightArmQuat.slerp(identityQuat, 0.15);
       this.rightShoulderPivot.quaternion.copy(this.smoothedRightArmQuat);
@@ -396,7 +378,7 @@ export class SceneManager {
   }
 
   /**
-   * Unprojects a 2D normalized landmark into 3D camera space.
+   * Unprojects a 2D normalized landmark into 3D camera space at the reference plane.
    */
   private unprojectLandmark(
     lm: NormalizedLandmark,
@@ -411,16 +393,17 @@ export class SceneManager {
     const ndcX = (screenX / width) * 2.0 - 1.0;
     const ndcY = -((screenY / height) * 2.0 - 1.0);
 
+    // Visible frustum dimensions at target plane z = 0 (distance = cameraZ = 4.0)
     const fovRadians = (this.cameraFov * Math.PI) / 180.0;
     const frustumHeightAtOrigin = 2.0 * this.cameraZ * Math.tan(fovRadians * 0.5);
-    const aspect = width / height;
+    const aspect = width / (height || 1);
     const frustumWidthAtOrigin = frustumHeightAtOrigin * aspect;
-
-    const depthOffset = (lm.z || 0) * -1.8;
 
     const worldX = ndcX * (frustumWidthAtOrigin * 0.5);
     const worldY = ndcY * (frustumHeightAtOrigin * 0.5);
-    const worldZ = depthOffset;
+
+    // Relative depth scaled safely (capped to prevent blowing up into the camera)
+    const worldZ = Math.max(-0.25, Math.min(0.25, -(lm.z || 0) * 0.4));
 
     return new Vector3(worldX, worldY, worldZ);
   }
