@@ -62,6 +62,8 @@ interface TryOnCanvasProps {
   onTrackingStatus?: (status: TrackingStatus) => void;
   /** Callback to report inference latency and delegate. */
   onInferenceStats?: (ms: number, delegate: 'GPU' | 'CPU') => void;
+  /** Callback to report main thread frame budget execution time in ms (target < 16.6ms). */
+  onFrameBudgetUpdate?: (frameTimeMs: number) => void;
 }
 
 /** DPR cap per architecture doc. */
@@ -101,6 +103,7 @@ export default function TryOnCanvas({
   onCameraStateChange,
   onTrackingStatus,
   onInferenceStats,
+  onFrameBudgetUpdate,
 }: TryOnCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -153,9 +156,10 @@ export default function TryOnCanvas({
     }
   }, [garmentConfig]);
 
-  // FPS tracking
+  // FPS and Frame Budget tracking
   const fpsFrameCountRef = useRef(0);
   const fpsLastTimeRef = useRef(0);
+  const frameTimeSmoothedRef = useRef(2.0);
 
   /**
    * Draw the placeholder when the camera is off.
@@ -219,6 +223,7 @@ export default function TryOnCanvas({
 
     const render = () => {
       if (!isRenderingRef.current) return;
+      const frameStart = performance.now();
 
       const container = containerRef.current;
       if (!container || !video || video.readyState < 2) {
@@ -342,13 +347,18 @@ export default function TryOnCanvas({
         sceneManager.render();
       }
 
-      // 5. FPS calculation (every second)
+      // Compute frame budget execution time
+      const frameDuration = performance.now() - frameStart;
+      frameTimeSmoothedRef.current = frameTimeSmoothedRef.current * 0.85 + frameDuration * 0.15;
+
+      // 5. FPS and Budget calculation (every second)
       fpsFrameCountRef.current++;
       const now = performance.now();
       const elapsed = now - fpsLastTimeRef.current;
       if (elapsed >= 1000) {
         const fps = Math.round((fpsFrameCountRef.current * 1000) / elapsed);
         onFpsUpdate?.(fps);
+        onFrameBudgetUpdate?.(parseFloat(frameTimeSmoothedRef.current.toFixed(1)));
         fpsFrameCountRef.current = 0;
         fpsLastTimeRef.current = now;
       }
@@ -357,7 +367,7 @@ export default function TryOnCanvas({
     };
 
     rafIdRef.current = requestAnimationFrame(render);
-  }, [onFpsUpdate, onTrackingStatus, onInferenceStats]);
+  }, [onFpsUpdate, onTrackingStatus, onInferenceStats, onFrameBudgetUpdate]);
 
   /**
    * Stop the render loop.
@@ -453,6 +463,7 @@ export default function TryOnCanvas({
       onCameraStateChange?.(false);
       onTrackingStatus?.('idle');
       onFpsUpdate?.(0);
+      onFrameBudgetUpdate?.(0);
 
       // Redraw placeholder
       const canvas = canvasRef.current;

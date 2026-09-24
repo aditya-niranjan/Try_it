@@ -37,6 +37,7 @@ export default function TryOnPage() {
   const [enableClothSim, setEnableClothSim] = useState(true);
   const [isBreezeActive, setIsBreezeActive] = useState(false);
   const [inferenceStats, setInferenceStats] = useState<{ ms: number; delegate: 'GPU' | 'CPU' } | null>(null);
+  const [frameBudgetMs, setFrameBudgetMs] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   // Garment Configuration State
@@ -58,10 +59,15 @@ export default function TryOnPage() {
     setFps(0);
     setTrackingStatus('idle');
     setInferenceStats(null);
+    setFrameBudgetMs(0);
   }, []);
 
   const handleFpsUpdate = useCallback((newFps: number) => {
     setFps(newFps);
+  }, []);
+
+  const handleFrameBudgetUpdate = useCallback((ms: number) => {
+    setFrameBudgetMs(ms);
   }, []);
 
   const handleTrackingStatus = useCallback((status: TrackingStatus) => {
@@ -262,6 +268,25 @@ export default function TryOnPage() {
             </div>
           )}
 
+          {/* Main Thread Frame Budget Badge (Gate S7) */}
+          {isCameraActive && frameBudgetMs > 0 && (
+            <div
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-mono ${
+                frameBudgetMs <= 8.0
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                  : frameBudgetMs <= 14.0
+                  ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                  : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+              }`}
+              title={`Main-thread execution: ${frameBudgetMs}ms of 16.6ms budget (${Math.round((frameBudgetMs / 16.6) * 100)}% used)`}
+              id="frame-budget-badge"
+            >
+              <span className="text-[10px] text-white/40">CPU:</span>
+              <span className="font-semibold">{frameBudgetMs}ms</span>
+              <span className="text-[10px] text-white/30">/ 16.6ms</span>
+            </div>
+          )}
+
           {/* Live FPS counter */}
           <div
             className={`px-3 py-1.5 rounded-lg border text-[11px] font-mono transition-colors duration-300 ${
@@ -333,6 +358,7 @@ export default function TryOnPage() {
             windStrength={isBreezeActive ? 1.0 : 0.0}
             garmentConfig={garmentConfig}
             onFpsUpdate={handleFpsUpdate}
+            onFrameBudgetUpdate={handleFrameBudgetUpdate}
             onError={handleError}
             onCameraStateChange={handleCameraStateChange}
             onTrackingStatus={handleTrackingStatus}
@@ -520,15 +546,66 @@ export default function TryOnPage() {
             </div>
           </div>
 
-          {/* Live Torso Anchoring Status Card */}
-          <div className="mt-auto p-3.5 rounded-xl border border-white/[0.06] bg-white/[0.02] flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse" />
-              <span className="text-xs font-medium text-white/80">3D Torso Rig</span>
+          {/* Milestone 1 Telemetry & Diagnostics Card (Gate S7) */}
+          <div className="mt-auto p-3.5 rounded-xl border border-white/[0.08] bg-white/[0.03] flex flex-col gap-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${isCameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-white/20'}`} />
+                <span className="text-xs font-semibold text-white/90">Milestone 1 Pipeline</span>
+              </div>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                60 FPS
+              </span>
             </div>
-            <p className="text-[11px] text-white/40 leading-relaxed">
-              T-shirt dynamically anchors to shoulders & spine. Move closer/farther, lean, or rotate to test 3D tracking.
-            </p>
+
+            <div className="space-y-1.5 text-[11px] font-mono">
+              <div className="flex justify-between items-center text-white/50">
+                <span>Main Thread CPU:</span>
+                <span className={`font-semibold ${frameBudgetMs <= 8 ? 'text-emerald-400' : frameBudgetMs <= 14 ? 'text-amber-400' : 'text-rose-400'}`}>
+                  {frameBudgetMs > 0 ? `${frameBudgetMs}ms` : '--'}
+                  <span className="text-white/30 text-[10px]"> / 16.6ms</span>
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center text-white/50">
+                <span>GPU Worker CV:</span>
+                <span className="text-violet-300">
+                  {inferenceStats ? `${inferenceStats.ms}ms (${inferenceStats.delegate})` : '--'}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center text-white/50">
+                <span>Depth Occlusion:</span>
+                <span className={enableOcclusion ? 'text-blue-300' : 'text-white/30'}>
+                  {enableOcclusion ? 'Active' : 'Off'}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center text-white/50">
+                <span>Cloth Drape/Sway:</span>
+                <span className={enableClothSim ? 'text-fuchsia-300' : 'text-white/30'}>
+                  {enableClothSim ? 'Active' : 'Static'}
+                </span>
+              </div>
+            </div>
+
+            {/* Frame Budget Progress Bar */}
+            {isCameraActive && frameBudgetMs > 0 && (
+              <div className="space-y-1 pt-1 border-t border-white/[0.06]">
+                <div className="flex justify-between text-[10px] text-white/40 font-mono">
+                  <span>Frame Budget</span>
+                  <span>{Math.round((frameBudgetMs / 16.6) * 100)}% used</span>
+                </div>
+                <div className="w-full h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      frameBudgetMs <= 8 ? 'bg-emerald-400' : frameBudgetMs <= 14 ? 'bg-amber-400' : 'bg-rose-400'
+                    }`}
+                    style={{ width: `${Math.min(100, (frameBudgetMs / 16.6) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </aside>
       </main>
